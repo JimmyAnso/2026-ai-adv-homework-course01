@@ -16,7 +16,25 @@
 
 ## [未發布]
 
+### 新增
+
+- 2026-10-09：**綠界 ECPay AIO 金流**（信用卡）。`POST /api/orders/:id/ecpay` 產生付款表單參數、`POST /api/orders/:id/ecpay/verify` 由伺服器主動呼叫綠界 `QueryTradeInfo` 驗證並更新訂單（本地端收不到 Server Notify）；`POST /api/ecpay/result` 處理瀏覽器導回、`POST /api/ecpay/notify` 回應 `1|OK`。新增 `src/ecpay.js`（CheckMacValue SHA256、付款參數、查詢）。
+- `orders` 新增 `merchant_trade_no`、`ecpay_trade_no`、`payment_type`、`paid_at` 欄位，啟動時自動補到既有資料庫。
+- 測試：`tests/ecpay.test.js`、`tests/orderPayment.test.js`（共 8 個檔案、56 個案例）。
+
+### 變更
+
+- 結帳成功後導向 `/orders/<id>?payment=start` 並自動前往綠界付款頁；訂單詳情頁改為「前往綠界付款」「查詢付款結果」，並顯示付款時間與綠界交易編號。
+- `BASE_URL`、`ECPAY_*` 環境變數開始生效。
+- 付款未成立的訂單維持 `pending`（可重新付款），不再出現 `failed`。
+
+### 移除
+
+- 模擬付款：`PATCH /api/orders/:id/pay` 與訂單詳情頁的「付款成功 / 付款失敗」按鈕。
+
 ### 文件
+
+- 2026-10-09：更新各文件的金流說明；計畫歸檔於 `docs/plans/archive/2026-10-09-ecpay-aio-payment.md`。
 
 - 2026-10-09：建立專案文件結構——`CLAUDE.md`、`docs/README.md`、`ARCHITECTURE.md`、`DEVELOPMENT.md`、`FEATURES.md`、`TESTING.md`、`CHANGELOG.md`，以及 `docs/plans/` 與 `docs/plans/archive/` 目錄。
 

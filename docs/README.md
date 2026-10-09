@@ -1,6 +1,6 @@
 # 花漾生活 Flower Life — 花卉電商網站
 
-一個以 Node.js + Express 打造的花卉電商示範專案。單一伺服器同時提供 REST API 與 EJS 頁面，涵蓋會員註冊登入、商品瀏覽、訪客 / 會員雙模式購物車、下單扣庫存、模擬付款，以及後台的商品與訂單管理。
+一個以 Node.js + Express 打造的花卉電商示範專案。單一伺服器同時提供 REST API 與 EJS 頁面，涵蓋會員註冊登入、商品瀏覽、訪客 / 會員雙模式購物車、下單扣庫存、綠界 ECPay 信用卡付款，以及後台的商品與訂單管理。
 
 ## 功能一覽
 
@@ -8,7 +8,7 @@
 - **商品**：公開的分頁列表與詳情，預設內建 8 筆花卉商品
 - **購物車**：未登入以 `X-Session-Id` 識別、登入後以 JWT 識別的雙模式購物車
 - **訂單**：從購物車建立訂單（單一 transaction 內建立訂單、扣庫存、清空購物車）、訂單列表與詳情
-- **付款**：模擬付款（手動標記成功 / 失敗）。綠界 ECPay 僅預留環境變數，尚未串接
+- **付款**：綠界 ECPay AIO 信用卡付款（測試環境）。本地端收不到綠界的伺服器通知，付款結果由伺服器主動呼叫綠界查詢 API 驗證
 - **後台**：商品 CRUD、訂單列表（狀態篩選）與詳情
 - **API 文件**：由路由上的 JSDoc 產生 OpenAPI 3.0 規格檔
 
@@ -97,7 +97,7 @@ rm database.sqlite database.sqlite-shm database.sqlite-wal
 | `/login` | 登入 / 註冊 | — |
 | `/checkout` | 結帳 | 會員 |
 | `/orders` | 我的訂單 | 會員 |
-| `/orders/:id` | 訂單詳情、模擬付款 | 會員 |
+| `/orders/:id` | 訂單詳情、前往綠界付款、查詢付款結果 | 會員 |
 | `/admin/products` | 後台商品管理 | 管理員 |
 | `/admin/orders` | 後台訂單管理 | 管理員 |
 
@@ -107,7 +107,7 @@ rm database.sqlite database.sqlite-shm database.sqlite-wal
 
 1. **統一回應格式**：所有 API 回傳 `{ data, error, message }`。
 2. **購物車雙模式認證**：有 `Authorization` 就用 JWT（無效即 401，不退回訪客）；否則用 `X-Session-Id`。訪客購物車登入後**不會**合併到會員購物車。
-3. **付款是模擬的**：`PATCH /api/orders/:id/pay`；`.env.example` 的 `ECPAY_*`、`BASE_URL` 目前沒有任何程式使用。
+3. **付款結果靠主動查詢**：付款走綠界 ECPay AIO（`.env` 的 `ECPAY_*`、`BASE_URL`）。因為只在本地端執行、收不到綠界的 Server Notify，訂單只會在 `POST /api/orders/:id/ecpay/verify` 向綠界查詢並驗證後才變成已付款。測試卡號 `4311-9522-2222-2222`、3D 驗證碼 `1234`。
 4. **運費只存在於前端畫面**：訂單 `total_amount` 不含運費。
 5. **測試與開發共用同一個資料庫檔**：跑測試會留下資料並消耗庫存。
 6. **頁面路由不做伺服器端認證**：權限由 API 把關，頁面只做前端導向。

@@ -37,7 +37,7 @@ createApp({
           body: JSON.stringify(form.value)
         });
         Notification.show('訂單已建立', 'success');
-        window.location.href = '/orders/' + res.data.id;
+        window.location.href = '/orders/' + res.data.id + '?payment=start';
       } catch (err) {
         Notification.show(err?.data?.message || '訂單建立失敗', 'error');
       } finally {

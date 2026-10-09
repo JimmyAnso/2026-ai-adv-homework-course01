@@ -10,14 +10,14 @@
 | 商品瀏覽（列表、詳情） | ✅ 完成 | 公開、分頁 |
 | 購物車（訪客 + 會員雙模式） | ✅ 完成 | 訪客購物車登入後**不會合併** |
 | 訂單建立 / 查詢 | ✅ 完成 | transaction 扣庫存 |
-| 付款 | 🟡 模擬 | 以按鈕手動標記成功 / 失敗；ECPay 僅預留環境變數，未實作 |
+| 付款 | ✅ 完成（測試環境） | 綠界 ECPay AIO 信用卡付款；付款結果由伺服器主動查詢綠界驗證（本地端收不到 Server Notify）。不支援 ATM / 超商、退款 |
 | 運費 | 🟡 僅前端顯示 | 滿 500 免運、未滿收 150 的規則只存在於畫面，後端 `total_amount` 不含運費 |
 | 後台商品管理 | ✅ 完成 | CRUD |
 | 後台訂單管理 | 🟡 唯讀 | 列表、狀態篩選、詳情；無法修改訂單狀態 |
 | 前台頁面 | ✅ 完成 | 首頁、商品詳情、購物車、結帳、登入、訂單列表、訂單詳情、404 |
 | 後台頁面 | ✅ 完成 | 商品管理、訂單管理 |
 | OpenAPI 文件產生 | ✅ 完成 | `npm run openapi` → `openapi.json`（無 Swagger UI） |
-| 訪客購物車合併、商品搜尋 / 分類、訂單取消、庫存回補、密碼重設、修改個人資料 | ⬜ 未實作 | — |
+| 訪客購物車合併、商品搜尋 / 分類、訂單取消、庫存回補、退款、電子發票、密碼重設、修改個人資料 | ⬜ 未實作 | — |
 
 ---
 
@@ -259,35 +259,72 @@
 
 ### 4.3 訂單詳情 `GET /api/orders/:id`
 
-回應 data：`orders` 整列（`id, order_no, user_id, recipient_name, recipient_email, recipient_address, total_amount, status, created_at`）加上 `items: [ { id, order_id, product_id, product_name, product_price, quantity } ]`。
+回應 data：`orders` 整列（`id, order_no, user_id, recipient_name, recipient_email, recipient_address, total_amount, status, merchant_trade_no, ecpay_trade_no, payment_type, paid_at, created_at`）加上 `items: [ { id, order_id, product_id, product_name, product_price, quantity } ]`。
 
 不存在或不屬於自己 → `404 NOT_FOUND「訂單不存在」`。
 
-### 4.4 模擬付款 `PATCH /api/orders/:id/pay`
+### 4.4 綠界付款 `POST /api/orders/:id/ecpay`、`POST /api/orders/:id/ecpay/verify`
 
-目前**沒有真實金流**。此端點讓訂單擁有者自行決定付款結果，用於展示流程。
+付款使用綠界 ECPay AIO，付款方式固定為信用卡。專案只在本地端執行、收不到綠界的 Server Notify，因此付款結果一律由伺服器**主動查詢**綠界後才生效（架構與注意事項見 [ARCHITECTURE.md 第 8 節](./ARCHITECTURE.md#8-金流--第三方整合)）。
 
-| Body 欄位 | 必填 | 值 |
-| --- | --- | --- |
-| `action` | ✅ | `"success"` → 狀態變 `paid`；`"fail"` → 狀態變 `failed` |
+#### 產生付款參數 `POST /api/orders/:id/ecpay`
 
-- 只有 `pending` 的訂單可以操作。`paid` 與 `failed` 都是終態：**付款失敗的訂單無法重新付款**，需重新下單。
-- 付款失敗**不會回補庫存**，也不會還原購物車。
-- 回應 data：更新後的完整訂單 + `items`（格式同 4.3）。message 為「付款成功」或「付款失敗」（兩者 HTTP 狀態都是 200，`error` 都是 `null`）。
+無 request body。回應 data：`{ action, params }`——`action` 是綠界付款頁網址，`params` 是要以 form POST 送出的欄位（含 `CheckMacValue`）。前端必須用**全頁表單送出**，不可用 iframe 或 `fetch`。
+
+- 只有 `pending` 的訂單可以付款。
+- 每次呼叫都會產生新的 `MerchantTradeNo` 並覆寫 `orders.merchant_trade_no`（綠界不允許重複使用訂單編號，所以付款未完成後可以再按一次重新付款）。
+- 若訂單先前已發起過付款，會先向綠界查詢那一次的結果；已付款就直接把訂單更新為 `paid` 並回 `INVALID_STATUS`，避免重複扣款。
+- 金額為訂單的 `total_amount`（不含運費）。
 
 | 狀態 | error | message |
 | --- | --- | --- |
-| 400 | `VALIDATION_ERROR` | action 必須為 success 或 fail |
-| 404 | `NOT_FOUND` | 訂單不存在 |
+| 404 | `NOT_FOUND` | 訂單不存在（含他人的訂單） |
 | 400 | `INVALID_STATUS` | 訂單狀態不是 pending，無法付款 |
+| 502 | `INTERNAL_ERROR` | 無法連線至綠界查詢付款結果，請稍後再試（確認前一次付款時） |
 
-檢查順序為 action → 訂單存在 → 狀態；因此對不存在的訂單送出不合法的 action 會先得到 400。
+#### 查詢並確認付款結果 `POST /api/orders/:id/ecpay/verify`
+
+無 request body。伺服器呼叫綠界 `QueryTradeInfo`、驗證回應的 CheckMacValue，並比對 `MerchantTradeNo` 與金額。
+
+回應 data：更新後的完整訂單 + `items` + `trade_status`（綠界回傳的 `TradeStatus`；訂單原本就已付款時為 `null`）。HTTP 200 不代表已付款，請看 `data.status`：
+
+| 綠界結果 | 訂單 | message |
+| --- | --- | --- |
+| `TradeStatus = 1` 且金額相符 | `paid`，寫入 `ecpay_trade_no`、`payment_type`、`paid_at` | 付款成功 |
+| 未付款 / 銀行尚未回覆 / 交易未成立 / 綠界查無此單 | 維持 `pending` | 尚未完成付款 |
+
+- 已 `paid` 的訂單直接回傳、不再呼叫綠界（冪等）。
+- `paid` 是終態。付款未成立的訂單維持 `pending`，可重新付款；`failed` 狀態目前不會被寫入。**庫存不會回補**。
+- `paid_at` 是綠界回傳的台灣時間字串（`yyyy/MM/dd HH:mm:ss`），與其他 UTC 時間欄位不同。
+
+| 狀態 | error | message |
+| --- | --- | --- |
+| 404 | `NOT_FOUND` | 訂單不存在 |
+| 400 | `INVALID_STATUS` | 訂單尚未發起付款 / 訂單狀態不是 pending，無法付款 |
+| 400 | `PAYMENT_MISMATCH` | 綠界回傳的交易資料與訂單不符（交易編號或金額不同，訂單不會更新） |
+| 502 | `INTERNAL_ERROR` | 無法連線至綠界查詢付款結果，請稍後再試 / 綠界回應驗證失敗，請稍後再試 |
+
+#### 綠界導回與通知 `POST /api/ecpay/result`、`POST /api/ecpay/notify`
+
+不需登入，回應**不是** `{ data, error, message }`：
+
+- `/api/ecpay/result`（OrderResultURL）：綠界付款完成後把瀏覽器以表單 POST 導回這裡。只用 `MerchantTradeNo` 找出訂單並 `303` 導向 `/orders/<id>`（找不到則導向 `/orders`），**不更新訂單狀態**。
+- `/api/ecpay/notify`（ReturnURL）：綠界規定必填的伺服器通知網址，本地端收不到。只回純文字 `1|OK`，**不更新訂單狀態**。
+
+#### 測試付款
+
+綠界測試環境的信用卡：卡號 `4311-9522-2222-2222`、有效期限任意未來年月、安全碼任意三碼、3D 驗證碼 `1234`。
+
+#### 已知限制
+
+- 剛付款完成時銀行可能尚未回覆，查詢結果會是未付款；稍候再按「查詢付款結果」即可。查詢過於頻繁會被綠界回 403（需等 30 分鐘）。
+- 使用者若在綠界付款後沒有回到訂單頁（例如直接關閉分頁），訂單會維持 `pending`，直到有人再次開啟該訂單頁或呼叫查詢端點。後台訂單頁沒有查詢按鈕。
 
 ### 4.5 前端行為
 
-- **結帳 `/checkout`**：需登入（否則導向 `/login?redirect=/checkout`）。載入時取購物車，若為空或失敗則導回 `/cart`。表單前端驗證三個欄位後送出；成功導向 `/orders/<id>`；失敗以 Toast 顯示後端的 `message`（例如庫存不足的商品名稱）。送出期間按鈕鎖定避免重複提交。
+- **結帳 `/checkout`**：需登入（否則導向 `/login?redirect=/checkout`）。載入時取購物車，若為空或失敗則導回 `/cart`。表單前端驗證三個欄位後送出；成功導向 `/orders/<id>?payment=start`，訂單頁會自動跳轉到綠界付款頁；失敗以 Toast 顯示後端的 `message`（例如庫存不足的商品名稱）。送出期間按鈕鎖定避免重複提交。
 - **我的訂單 `/orders`**：需登入。列出訂單編號、金額、狀態徽章、日期，點擊進入詳情。
-- **訂單詳情 `/orders/:id`**：需登入。顯示訂單資訊、收件資訊、明細表與總計。`status === 'pending'` 時顯示「付款成功」「付款失敗」兩顆模擬按鈕；操作後就地更新訂單並顯示結果橫幅。網址帶 `?payment=success|failed|cancel` 時也會顯示對應橫幅（為金流導回預留，純顯示）。
+- **訂單詳情 `/orders/:id`**：需登入。顯示訂單資訊、收件資訊、明細表與總計。`status === 'pending'` 時顯示「前往綠界付款」；已發起過付款（有 `merchant_trade_no`）時另外顯示「查詢付款結果」，且頁面載入時會自動查詢一次，依結果顯示「付款成功」或「尚未收到付款結果」橫幅。已付款的訂單顯示付款時間與綠界交易編號。網址帶 `?payment=start` 時自動前往綠界（進入前會把 query 從網址移除，避免按上一頁又觸發付款）；帶 `?payment=success|failed|cancel` 時只顯示對應橫幅。
 - 狀態顯示對照：`pending` 待付款、`paid` 已付款、`failed` 付款失敗（`statusMap` 在 `orders.js`、`order-detail.js`、`admin-orders.js` 各有一份，新增狀態時三處都要改）。
 - 日期以 `new Date(created_at).toLocaleDateString('zh-TW')` 顯示。`created_at` 是不帶時區的 UTC 字串，瀏覽器會當成本地時間解析，接近午夜（UTC）建立的訂單在台灣可能顯示為前一天。
 

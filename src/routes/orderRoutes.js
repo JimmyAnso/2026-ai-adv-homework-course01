@@ -2,6 +2,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../database');
 const authMiddleware = require('../middleware/authMiddleware');
+const ecpay = require('../ecpay');
 
 const router = express.Router();
 
@@ -309,11 +310,43 @@ router.get('/:id', (req, res) => {
   });
 });
 
+
+const PAID_TRADE_STATUS = '1';
+
+/**
+ * Query ECPay for the order's latest payment attempt and mark the order as paid
+ * when ECPay confirms it. Returns { order, tradeStatus, mismatch }.
+ */
+async function syncPaymentStatus(order) {
+  const trade = await ecpay.queryTradeInfo(order.merchant_trade_no);
+  const tradeStatus = trade.TradeStatus;
+
+  if (trade.MerchantTradeNo !== order.merchant_trade_no) {
+    return { order, tradeStatus, mismatch: true };
+  }
+  if (tradeStatus !== PAID_TRADE_STATUS) {
+    return { order, tradeStatus, mismatch: false };
+  }
+  if (Number(trade.TradeAmt) !== order.total_amount) {
+    return { order, tradeStatus, mismatch: true };
+  }
+
+  // Guard on status so repeated verifications stay idempotent
+  db.prepare(
+    `UPDATE orders SET status = 'paid', ecpay_trade_no = ?, payment_type = ?, paid_at = ?
+     WHERE id = ? AND status = 'pending'`
+  ).run(trade.TradeNo, trade.PaymentType, trade.PaymentDate, order.id);
+
+  const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
+  return { order: updated, tradeStatus, mismatch: false };
+}
+
 /**
  * @openapi
- * /api/orders/{id}/pay:
- *   patch:
- *     summary: 模擬付款（更新訂單付款狀態）
+ * /api/orders/{id}/ecpay:
+ *   post:
+ *     summary: 產生綠界 ECPay 付款表單參數
+ *     description: 回傳要以 form POST 送往綠界付款頁的網址與欄位（含 CheckMacValue）。每次呼叫都會產生新的 MerchantTradeNo。
  *     tags: [Orders]
  *     security:
  *       - bearerAuth: []
@@ -323,20 +356,90 @@ router.get('/:id', (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [action]
- *             properties:
- *               action:
- *                 type: string
- *                 enum: [success, fail]
  *     responses:
  *       200:
- *         description: 付款狀態更新成功
+ *         description: 成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     action:
+ *                       type: string
+ *                       description: 綠界付款頁網址（form 的 action）
+ *                     params:
+ *                       type: object
+ *                       description: 要送出的表單欄位
+ *                       additionalProperties:
+ *                         type: string
+ *                 error:
+ *                   type: string
+ *                   nullable: true
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: 訂單狀態不是 pending（含查詢後發現已付款）
+ *       404:
+ *         description: 訂單不存在
+ *       502:
+ *         description: 無法向綠界確認前一次付款的結果
+ */
+router.post('/:id/ecpay', async (req, res, next) => {
+  try {
+    let order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, req.user.userId);
+    if (!order) {
+      return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
+    }
+
+    // A previous attempt may already be paid; confirm before starting a new one
+    if (order.status === 'pending' && order.merchant_trade_no) {
+      order = (await syncPaymentStatus(order)).order;
+    }
+
+    if (order.status !== 'pending') {
+      return res.status(400).json({
+        data: null,
+        error: 'INVALID_STATUS',
+        message: '訂單狀態不是 pending，無法付款'
+      });
+    }
+
+    const merchantTradeNo = ecpay.generateMerchantTradeNo(order.order_no);
+    db.prepare('UPDATE orders SET merchant_trade_no = ? WHERE id = ?').run(merchantTradeNo, order.id);
+
+    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+
+    res.json({
+      data: ecpay.buildCheckoutParams(order, items, merchantTradeNo),
+      error: null,
+      message: '成功'
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @openapi
+ * /api/orders/{id}/ecpay/verify:
+ *   post:
+ *     summary: 向綠界查詢付款結果並更新訂單
+ *     description: 伺服器主動呼叫綠界 QueryTradeInfo 驗證付款結果；確認已付款且金額相符時將訂單更新為 paid。
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: 查詢完成（訂單可能仍為 pending，請看 data.status）
  *         content:
  *           application/json:
  *             schema:
@@ -353,8 +456,24 @@ router.get('/:id', (req, res) => {
  *                       type: integer
  *                     status:
  *                       type: string
+ *                     merchant_trade_no:
+ *                       type: string
+ *                       nullable: true
+ *                     ecpay_trade_no:
+ *                       type: string
+ *                       nullable: true
+ *                     payment_type:
+ *                       type: string
+ *                       nullable: true
+ *                     paid_at:
+ *                       type: string
+ *                       nullable: true
  *                     created_at:
  *                       type: string
+ *                     trade_status:
+ *                       type: string
+ *                       nullable: true
+ *                       description: 綠界回傳的 TradeStatus（訂單原本就已付款時為 null）
  *                     items:
  *                       type: array
  *                       items:
@@ -372,47 +491,54 @@ router.get('/:id', (req, res) => {
  *                 message:
  *                   type: string
  *       400:
- *         description: action 無效或訂單狀態不是 pending
+ *         description: 訂單尚未發起付款、狀態不可付款，或綠界回傳的交易與訂單不符
  *       404:
  *         description: 訂單不存在
+ *       502:
+ *         description: 無法連線至綠界或回應驗證失敗
  */
-router.patch('/:id/pay', (req, res) => {
-  const { action } = req.body;
-  const userId = req.user.userId;
+router.post('/:id/ecpay/verify', async (req, res, next) => {
+  try {
+    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, req.user.userId);
+    if (!order) {
+      return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
+    }
 
-  const actionMap = { success: 'paid', fail: 'failed' };
-  if (!action || !actionMap[action]) {
-    return res.status(400).json({
-      data: null,
-      error: 'VALIDATION_ERROR',
-      message: 'action 必須為 success 或 fail'
+    const getItems = () => db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+
+    if (order.status === 'paid') {
+      return res.json({
+        data: { ...order, items: getItems(), trade_status: null },
+        error: null,
+        message: '付款成功'
+      });
+    }
+
+    if (order.status !== 'pending' || !order.merchant_trade_no) {
+      return res.status(400).json({
+        data: null,
+        error: 'INVALID_STATUS',
+        message: order.status === 'pending' ? '訂單尚未發起付款' : '訂單狀態不是 pending，無法付款'
+      });
+    }
+
+    const result = await syncPaymentStatus(order);
+    if (result.mismatch) {
+      return res.status(400).json({
+        data: null,
+        error: 'PAYMENT_MISMATCH',
+        message: '綠界回傳的交易資料與訂單不符'
+      });
+    }
+
+    res.json({
+      data: { ...result.order, items: getItems(), trade_status: result.tradeStatus },
+      error: null,
+      message: result.order.status === 'paid' ? '付款成功' : '尚未完成付款'
     });
+  } catch (err) {
+    next(err);
   }
-
-  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, userId);
-  if (!order) {
-    return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
-  }
-
-  if (order.status !== 'pending') {
-    return res.status(400).json({
-      data: null,
-      error: 'INVALID_STATUS',
-      message: '訂單狀態不是 pending，無法付款'
-    });
-  }
-
-  const newStatus = actionMap[action];
-  db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(newStatus, order.id);
-
-  const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
-  const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
-
-  res.json({
-    data: { ...updated, items },
-    error: null,
-    message: action === 'success' ? '付款成功' : '付款失敗'
-  });
 });
 
 module.exports = router;

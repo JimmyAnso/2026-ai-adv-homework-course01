@@ -6,9 +6,9 @@
 | --- | --- |
 | 測試框架 | Vitest 2（`globals: true`，`describe` / `it` / `expect` / `beforeAll` 不需 import） |
 | HTTP 測試 | supertest，直接載入 `app`（不啟動伺服器、不佔 port） |
-| 測試類型 | API 整合測試：真實的 Express app + 真實的 SQLite 檔案，**沒有 mock** |
+| 測試類型 | API 整合測試：真實的 Express app + 真實的 SQLite 檔案。唯一的 mock 是綠界查詢 API（以 `vi.spyOn(globalThis, 'fetch')` 取代），測試不會對外連線 |
 | 範圍 | 僅後端 API。前端 JS、EJS 頁面沒有測試 |
-| 現況 | 6 個檔案、32 個測試案例 |
+| 現況 | 8 個檔案、56 個測試案例 |
 
 ```bash
 npm test                                 # 執行全部（vitest run，單次執行）
@@ -34,10 +34,11 @@ npx vitest                               # watch 模式
 | `tests/orders.test.js` | `/api/orders` | 6 | 從購物車建立訂單、空購物車（400）、未登入（401）、列表、詳情、不存在（404） |
 | `tests/adminProducts.test.js` | `/api/admin/products` | 6 | 列表、新增、編輯、刪除、一般使用者（403）、未登入（401） |
 | `tests/adminOrders.test.js` | `/api/admin/orders` | 4 | 列表、依狀態篩選、詳情、一般使用者（403） |
+| `tests/ecpay.test.js` | `src/ecpay.js` | 11 | 官方 CheckMacValue 測試向量（取自 `.claude/skills/ecpay/test-vectors/`）、驗證 / 竄改偵測、MerchantTradeNo 格式、台灣時間格式、付款參數與簽章 |
+| `tests/orderPayment.test.js` | `/api/orders/:id/ecpay*`、`/api/ecpay/*` | 13 | 付款參數與簽章、未登入（401）、他人訂單（404）、導回（303）不改狀態、通知回 `1|OK`、未付款維持 pending、CheckMacValue 錯誤（502）、金額不符（`PAYMENT_MISMATCH`）、確認付款、冪等、已付款不可再付、舊的模擬付款端點已移除 |
 
 ### 尚未涵蓋（新增測試的優先候選）
 
-- `PATCH /api/orders/:id/pay`（模擬付款，含 `INVALID_STATUS`）
 - 各種 `VALIDATION_ERROR`（註冊欄位、購物車 quantity、商品 price / stock）
 - `STOCK_INSUFFICIENT`（購物車與下單）
 - 購物車同商品累加行為
@@ -79,6 +80,7 @@ test: {
 | `orders.test.js` | `beforeAll` 註冊使用者並加入購物車 → 建立訂單（設定 `orderId`）→ **空購物車測試依賴前一個測試已清空購物車** → 列表 → 詳情 |
 | `adminProducts.test.js` | 新增（設定 `createdProductId`）→ 編輯 → 刪除 |
 | `adminOrders.test.js` | `beforeAll` 建立一筆完整訂單（設定 `orderId`）→ 列表 / 篩選 / 詳情 |
+| `orderPayment.test.js` | `beforeAll` 自建商品與訂單 → 取得付款參數（設定 `merchantTradeNo`）→ 導回 / 未付款 / 驗證失敗 / 金額不符 → 確認付款 → 冪等與已付款檢查 → 刪除自建商品 |
 
 後果：用 `-t` 只跑中間某一個案例、或用 `it.only` / `it.skip` 跳過前面的案例，後面的案例會因為變數是 `undefined` 而失敗。這是預期中的限制，不是 bug。
 
@@ -117,8 +119,8 @@ const { app, request, getAdminToken, registerUser } = require('./setup');
 
 | 殘留資料 | 來源 |
 | --- | --- |
-| 約 6 個 `@example.com` 使用者 | 各檔案的註冊 |
-| 2 筆 `pending` 訂單 | `orders.test.js`、`adminOrders.test.js` |
+| 約 8 個 `@example.com` 使用者 | 各檔案的註冊 |
+| 2 筆 `pending` 訂單、1 筆 `paid` 訂單 | `orders.test.js`、`adminOrders.test.js`；`orderPayment.test.js`（使用自建商品，不消耗 seed 庫存） |
 | `products[0]` 的庫存 −2 | 上述兩筆訂單各扣 1 |
 | 1 筆會員購物車項目（數量 2） | `cart.test.js` 的會員模式測試未清理 |
 
@@ -147,90 +149,65 @@ const { app, request, getAdminToken, registerUser } = require('./setup');
 8. 執行 `npm test` **至少兩次**，確認在已有殘留資料的資料庫上仍然通過。
 9. 更新本文件第 2 節的表格。
 
-### 6.2 範例：測試模擬付款
+### 6.2 範例：測試付款（模擬綠界查詢回應）
+
+完整範例見 `tests/orderPayment.test.js`。重點是自備商品、檔案內依序依賴，以及用簽過章的假回應取代綠界查詢 API：
 
 ```js
 const { app, request, getAdminToken, registerUser } = require('./setup');
+const ecpay = require('../src/ecpay');
 
-describe('Order Payment API', () => {
-  let adminToken;
+/**
+ * Mock the next ECPay QueryTradeInfo call with a signed response.
+ */
+function mockQueryTradeInfo(fields) {
+  const { hashKey, hashIv, merchantId } = ecpay.getConfig();
+  const body = { MerchantID: merchantId, TradeAmt: '0', TradeNo: '', PaymentType: '', PaymentDate: '', ...fields };
+  body.CheckMacValue = ecpay.generateCheckMacValue(body, hashKey, hashIv);
+
+  return vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+    new Response(new URLSearchParams(body).toString(), { status: 200 })
+  );
+}
+
+describe('Order ECPay Payment API', () => {
   let userToken;
-  let productId;
   let orderId;
+  let totalAmount;
+  let merchantTradeNo;
 
-  beforeAll(async () => {
-    adminToken = await getAdminToken();
+  // beforeAll: create a dedicated product, register a user, add to cart, create the order
 
-    // Use a dedicated product so seed stock is not consumed
-    const productRes = await request(app)
-      .post('/api/admin/products')
-      .set('Authorization', `Bearer ${adminToken}`)
-      .send({ name: `付款測試商品-${Date.now()}`, price: 100, stock: 5 });
-    productId = productRes.body.data.id;
-
-    const { token } = await registerUser();
-    userToken = token;
-
-    await request(app)
-      .post('/api/cart')
-      .set('Authorization', `Bearer ${userToken}`)
-      .send({ productId, quantity: 2 });
-
-    const orderRes = await request(app)
-      .post('/api/orders')
-      .set('Authorization', `Bearer ${userToken}`)
-      .send({
-        recipientName: '付款測試',
-        recipientEmail: 'pay-test@example.com',
-        recipientAddress: '台北市測試路 1 號',
-      });
-    orderId = orderRes.body.data.id;
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it('should reject an invalid action', async () => {
+  it('should return signed ECPay checkout params', async () => {
     const res = await request(app)
-      .patch(`/api/orders/${orderId}/pay`)
-      .set('Authorization', `Bearer ${userToken}`)
-      .send({ action: 'refund' });
+      .post(`/api/orders/${orderId}/ecpay`)
+      .set('Authorization', `Bearer ${userToken}`);
 
-    expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('data', null);
-    expect(res.body).toHaveProperty('error', 'VALIDATION_ERROR');
+    expect(res.status).toBe(200);
+    merchantTradeNo = res.body.data.params.MerchantTradeNo;
   });
 
-  it('should mark a pending order as paid', async () => {
+  it('should mark the order as paid when ECPay confirms the payment', async () => {
+    mockQueryTradeInfo({ MerchantTradeNo: merchantTradeNo, TradeStatus: '1', TradeAmt: String(totalAmount) });
+
     const res = await request(app)
-      .patch(`/api/orders/${orderId}/pay`)
-      .set('Authorization', `Bearer ${userToken}`)
-      .send({ action: 'success' });
+      .post(`/api/orders/${orderId}/ecpay/verify`)
+      .set('Authorization', `Bearer ${userToken}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('error', null);
     expect(res.body.data).toHaveProperty('status', 'paid');
-    expect(Array.isArray(res.body.data.items)).toBe(true);
-  });
-
-  it('should reject paying an order that is no longer pending', async () => {
-    const res = await request(app)
-      .patch(`/api/orders/${orderId}/pay`)
-      .set('Authorization', `Bearer ${userToken}`)
-      .send({ action: 'success' });
-
-    expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('error', 'INVALID_STATUS');
-  });
-
-  it('should allow deleting the product once no pending order references it', async () => {
-    const res = await request(app)
-      .delete(`/api/admin/products/${productId}`)
-      .set('Authorization', `Bearer ${adminToken}`);
-
-    expect(res.status).toBe(200);
   });
 });
 ```
 
-這個範例示範了：自備商品避免消耗 seed 庫存、檔案內依序依賴（pending → paid → 再付一次）、比對確切錯誤碼、以及最後清理自己建立的商品（訂單已 `paid` 且購物車已在下單時清空，故可刪除）。
+- `vi` 與 `describe` 一樣是全域的，不需引入。每個案例後 `vi.restoreAllMocks()`，避免假的 `fetch` 影響後面的案例。
+- 假回應必須用 `ecpay.generateCheckMacValue` 簽章，否則會被當成驗證失敗（502）。
+- 訂單已 `paid` 且購物車已在下單時清空，所以最後可以刪除自建的商品。
 
 ### 6.3 斷言慣例
 
@@ -270,5 +247,6 @@ expect(res.body).toHaveProperty('error', 'NOT_FOUND');
 | 加入購物車預期 201 | `POST /api/cart` 成功回 **200** |
 | 刪不掉測試商品 | 商品仍在任何購物車中 → 500；仍在 pending 訂單中 → 409。先清購物車 / 完成付款再刪 |
 | `hookTimeout` | `beforeAll` 上限 10 秒。前置步驟包含多次註冊（bcrypt 10 rounds）時留意不要超過 |
+| 測試打到真的綠界 | 會呼叫綠界的案例（`/ecpay/verify`，或對已發起過付款的訂單再呼叫 `/ecpay`）必須先 mock `fetch`；沒 mock 會對綠界測試環境發出真實請求，結果不穩定且可能被限速（403） |
 | 測試後資料變髒 | 測試寫入的是開發資料庫，不會自動還原。需要乾淨環境時刪除 `database.sqlite*` |
 | 管理員密碼被改過 | `.env` 的 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 與測試寫死的值不同、且資料庫為新建時，`getAdminToken()` 會失敗 |

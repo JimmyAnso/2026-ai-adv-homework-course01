@@ -28,16 +28,17 @@ npm run dev:server   # 終端機 2：node server.js（沒有 nodemon，改後端
 | `ADMIN_EMAIL` | Seed 管理員帳號 | 選填 | `admin@hexschool.com` |
 | `ADMIN_PASSWORD` | Seed 管理員密碼 | 選填 | `12345678` |
 | `NODE_ENV` | 僅影響 seed 管理員的 bcrypt salt rounds（`test` 時為 1，否則 10）。Vitest 會自動設為 `test` | 選填 | 無 |
-| `BASE_URL` | 預留（金流回呼網址用） | **目前未被程式讀取** | — |
-| `ECPAY_MERCHANT_ID` | 預留（綠界特店編號） | **目前未被程式讀取** | — |
-| `ECPAY_HASH_KEY` | 預留（綠界 HashKey） | **目前未被程式讀取** | — |
-| `ECPAY_HASH_IV` | 預留（綠界 HashIV） | **目前未被程式讀取** | — |
-| `ECPAY_ENV` | 預留（`staging` / `production`） | **目前未被程式讀取** | — |
+| `BASE_URL` | 本站對外網址，用來組出綠界的 `ReturnURL`（`/api/ecpay/notify`）與 `OrderResultURL`（`/api/ecpay/result`）。若改了 `PORT`，這裡要一起改 | 選填 | `http://localhost:3001` |
+| `ECPAY_MERCHANT_ID` | 綠界特店編號 | 選填 | `3002607`（綠界公開測試特店） |
+| `ECPAY_HASH_KEY` | 綠界 HashKey（計算 CheckMacValue，只能在後端使用） | 選填 | 綠界公開測試值 |
+| `ECPAY_HASH_IV` | 綠界 HashIV（同上） | 選填 | 綠界公開測試值 |
+| `ECPAY_ENV` | `production` 使用綠界正式環境；其他值一律使用測試環境 | 選填 | `staging` |
 
 注意事項：
 
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD` 只在「該 email 的使用者不存在」時用來建立帳號。**之後再改 `.env` 的密碼不會更新既有帳號**；改 email 則會多建立一個管理員。
 - 測試檔寫死使用 `admin@hexschool.com` / `12345678` 登入；若 `.env` 改了這兩個值且資料庫是新建的，測試會失敗（見 TESTING.md）。
+- `ECPAY_*` 的預設值是綠界公開共用的測試特店資料，只能用於測試環境；使用正式環境時三個值都必須換成專屬資料，且不可提交到版本控制。
 - 新增環境變數時：加進 `.env.example`、更新本表，並在程式中提供合理預設值或啟動時檢查。
 
 ## 3. 模組系統
@@ -57,7 +58,7 @@ npm run dev:server   # 終端機 2：node server.js（沒有 nodemon，改後端
 後端慣例：
 
 - `src/database.js` 匯出單一 `db` 連線（Node 模組快取保證單例）。所有路由直接 `require('../database')` 並撰寫 SQL，**沒有 model / service / repository 層**。
-- 所有路由處理函式都是**同步**的（better-sqlite3 與 `bcrypt.*Sync`）。Express 版本為 4.16，**不會自動捕捉 async 函式的 rejection**。若新增 `async` handler，必須自行 `try/catch` 並呼叫 `next(err)`，否則錯誤不會進入 `errorHandler`，請求會懸置。
+- 路由處理函式原則上都是**同步**的（better-sqlite3 與 `bcrypt.*Sync`）；唯一的例外是 `orderRoutes.js` 中需要呼叫綠界的 `POST /:id/ecpay` 與 `POST /:id/ecpay/verify`。Express 版本為 4.16，**不會自動捕捉 async 函式的 rejection**。若新增 `async` handler，必須自行 `try/catch` 並呼叫 `next(err)`，否則錯誤不會進入 `errorHandler`，請求會懸置。
 
 ## 4. 命名規則
 
@@ -262,7 +263,7 @@ Schema 與 seed 全部在 `src/database.js` 的 `initializeDatabase()`。**沒�
   - 需保留資料：在 `initializeDatabase()` 建表之後加入冪等的 `ALTER TABLE`（先以 `PRAGMA table_info(<table>)` 檢查欄位是否存在）。
 - **慣例**：主鍵 `id TEXT PRIMARY KEY`，由應用層 `uuidv4()` 產生；時間欄位 `TEXT NOT NULL DEFAULT (datetime('now'))`；金額用 `INTEGER`；列舉值用 `CHECK(col IN (...))`。
 - **外鍵**：`foreign_keys = ON` 且現有外鍵都沒有 `ON DELETE`，刪除被參考的列會拋錯。新增外鍵時請明確決定刪除行為，並在對應的刪除端點處理衝突（回 409，而不是讓它變成 500）。
-- **新增訂單狀態**：需同時修改 `orders.status` 的 CHECK（需重建表）、`adminOrderRoutes.js` 的狀態白名單、`orderRoutes.js` 的 `actionMap`，以及前端三處 `statusMap`（`orders.js`、`order-detail.js`、`admin-orders.js`）與 `admin/orders.ejs` 的下拉選單。
+- **新增訂單狀態**：需同時修改 `orders.status` 的 CHECK（需重建表）、`adminOrderRoutes.js` 的狀態白名單、`orderRoutes.js` 的 `syncPaymentStatus`（綠界查詢結果對應的狀態），以及前端三處 `statusMap`（`orders.js`、`order-detail.js`、`admin-orders.js`）與 `admin/orders.ejs` 的下拉選單。
 - 更新 `docs/ARCHITECTURE.md` 的 schema 表。
 
 ### 7.4 新增頁面

@@ -52,7 +52,10 @@ function initializeDatabase() {
       recipient_address TEXT NOT NULL,
       total_amount INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'paid', 'failed')),
-
+      merchant_trade_no TEXT,
+      ecpay_trade_no TEXT,
+      payment_type TEXT,
+      paid_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -67,6 +70,14 @@ function initializeDatabase() {
       FOREIGN KEY (order_id) REFERENCES orders(id)
     );
   `);
+
+  // Add payment columns to databases created before the ECPay integration
+  const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
+  for (const column of ['merchant_trade_no', 'ecpay_trade_no', 'payment_type', 'paid_at']) {
+    if (!orderColumns.includes(column)) {
+      db.exec(`ALTER TABLE orders ADD COLUMN ${column} TEXT`);
+    }
+  }
 
   // Seed data
   seedAdminUser();
