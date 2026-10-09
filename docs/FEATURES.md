@@ -412,7 +412,7 @@ Query 與回應格式與公開的 `GET /api/products` **完全相同**（`page` 
 | `limit` | 10 | 1–100 |
 | `status` | （無） | `pending` / `paid` / `failed`。**不在這三個值內的輸入會被靜默忽略**（回傳全部，不報 400） |
 
-回應 data：`{ orders: [ orders 整列 ], pagination }`，包含所有使用者的訂單，依 `created_at DESC`。列表不含明細與下單者資訊（只有 `user_id` 與收件人欄位）。`pagination.total` 會反映篩選後的筆數。
+回應 data：`{ orders: [ orders 整列 ], pagination }`（整列包含付款欄位 `merchant_trade_no`、`ecpay_trade_no`、`payment_type`、`paid_at`，未付款時為 `null`），包含所有使用者的訂單，依 `created_at DESC`。列表不含明細與下單者資訊（只有 `user_id` 與收件人欄位）。`pagination.total` 會反映篩選後的筆數。
 
 ### 6.2 詳情 `GET /api/admin/orders/:id`
 
@@ -423,6 +423,9 @@ Query 與回應格式與公開的 `GET /api/products` **完全相同**（`page` 
 - 狀態下拉選單（全部 / 待付款 / 已付款 / 付款失敗）變更時自動回到第 1 頁重新載入。
 - 列表的「買家」欄顯示的是**收件人姓名**（`recipient_name`），不是會員名稱；會員名稱與 Email 在詳情 Modal 中顯示。
 - 點擊訂單開啟詳情 Modal（另發一次詳情請求）。
+- 後台**不會**主動向綠界查詢付款結果，也沒有查詢按鈕；看到的狀態是資料庫當下的值。使用者付款後若沒有回到訂單頁，後台會一直顯示「待付款」，即使綠界那邊已經扣款成功（見 4.4 已知限制）。
+- 付款欄位（綠界交易編號、付款方式、付款時間）API 有回傳，但目前的列表與詳情 Modal 都沒有顯示。
+- 「付款失敗」篩選仍保留，但串接綠界後不會再產生 `failed` 訂單，只會篩出先前以模擬付款標記失敗的舊資料。
 
 ---
 

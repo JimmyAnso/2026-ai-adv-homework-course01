@@ -26,6 +26,7 @@
 | 前端互動 | Vue 3（CDN 全域版，無打包工具）、原生 `fetch` |
 | 樣式 | Tailwind CSS v4（`@tailwindcss/cli`） |
 | API 文件 | `swagger-jsdoc`（OpenAPI 3.0.3） |
+| 金流 | 綠界 ECPay AIO（信用卡，CheckMacValue SHA256）。自行實作於 `src/ecpay.js`，使用 Node 內建的 `crypto` 與 `fetch`，沒有額外套件 |
 | 測試 | Vitest 2 + supertest |
 | 其他 | `dotenv`、`cors`、`uuid` |
 

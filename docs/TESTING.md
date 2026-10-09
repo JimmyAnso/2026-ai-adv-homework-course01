@@ -22,6 +22,7 @@ npx vitest                               # watch 模式
 1. 已 `npm install`。
 2. 專案根目錄有 `.env` 且含 `JWT_SECRET`。測試透過 `require('../app')` 載入 dotenv，**不會經過 `server.js` 的啟動檢查**；缺少 `JWT_SECRET` 時不會有明確提示，而是註冊 / 登入回 500，接著測試因 `res.body.data` 為 `null` 而出現 `TypeError: Cannot read properties of null (reading 'token')` 之類的錯誤。
 3. 資料庫中存在 `admin@hexschool.com` / `12345678` 的管理員（預設 seed）。測試檔與 `getAdminToken()` 寫死這組帳密。
+4. `.claude/skills/ecpay/` 目錄有內容。`tests/ecpay.test.js` 會 `require` 其中的 `test-vectors/checkmacvalue.json` 來驗證 CheckMacValue；該目錄在版本控制中是指向另一個 git repo 的參照（gitlink），剛 clone 下來時可能是空的，此時這個測試檔會以 `Cannot find module` 失敗（其他測試檔不受影響）。
 
 ## 2. 測試檔案
 
@@ -46,6 +47,10 @@ npx vitest                               # watch 模式
 - 刪除商品的 `409 CONFLICT`
 - `dualAuth` 在 token 無效時不退回 session 的行為
 - 存取他人訂單 / 他人購物車項目回 404
+- 綠界連線逾時或回傳非 2xx 時的 502
+- 對已發起過付款的訂單再次呼叫 `POST /api/orders/:id/ecpay`（先查詢上一次嘗試、未付款時換發新的 `MerchantTradeNo`）
+- `ItemName` 過長時的截斷
+- 與真實綠界測試環境的端對端流程（目前只能手動驗證，步驟見 FEATURES.md 4.4「測試付款」）
 
 ## 3. 執行順序與依賴關係
 
@@ -248,5 +253,6 @@ expect(res.body).toHaveProperty('error', 'NOT_FOUND');
 | 刪不掉測試商品 | 商品仍在任何購物車中 → 500；仍在 pending 訂單中 → 409。先清購物車 / 完成付款再刪 |
 | `hookTimeout` | `beforeAll` 上限 10 秒。前置步驟包含多次註冊（bcrypt 10 rounds）時留意不要超過 |
 | 測試打到真的綠界 | 會呼叫綠界的案例（`/ecpay/verify`，或對已發起過付款的訂單再呼叫 `/ecpay`）必須先 mock `fetch`；沒 mock 會對綠界測試環境發出真實請求，結果不穩定且可能被限速（403） |
+| `tests/ecpay.test.js` 找不到模組 | `.claude/skills/ecpay/` 是空的（見第 1 節執行前提第 4 點）。把 ECPay skill 放回該目錄即可 |
 | 測試後資料變髒 | 測試寫入的是開發資料庫，不會自動還原。需要乾淨環境時刪除 `database.sqlite*` |
 | 管理員密碼被改過 | `.env` 的 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 與測試寫死的值不同、且資料庫為新建時，`getAdminToken()` 會失敗 |

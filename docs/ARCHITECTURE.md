@@ -168,7 +168,7 @@
 | `/checkout` | `pages/checkout` | front | `checkout` | — | `Auth.requireAuth()` |
 | `/login` | `pages/login` | front | `login` | — | 無 |
 | `/orders` | `pages/orders` | front | `orders` | — | `Auth.requireAuth()` |
-| `/orders/:id` | `pages/order-detail` | front | `order-detail` | `orderId`、`paymentResult`（來自 `?payment=`） | `Auth.requireAuth()` |
+| `/orders/:id` | `pages/order-detail` | front | `order-detail` | `orderId`、`paymentResult`（來自 `?payment=`；`start` 表示載入後自動前往綠界付款，見第 8.1 節） | `Auth.requireAuth()` |
 | `/admin/products` | `pages/admin/products` | admin | `admin-products` | `currentPath` | `Auth.requireAdmin()` |
 | `/admin/orders` | `pages/admin/orders` | admin | `admin-orders` | `currentPath` | `Auth.requireAdmin()` |
 
@@ -499,4 +499,4 @@ pending ──綠界確認已付款──► paid   （終態）
 
 ### 8.4 OpenAPI
 
-每個 API 路由上方都有 `@openapi` JSDoc 區塊。`npm run openapi` 會以 `swagger-jsdoc` 掃描 `src/routes/*.js`，在專案根目錄產生 `openapi.json`。專案**沒有**掛載 Swagger UI，該檔案需自行匯入 Postman / Swagger Editor 等工具檢視。
+每個 API 路由上方都有 `@openapi` JSDoc 區塊。`npm run openapi` 會以 `swagger-jsdoc` 掃描 `src/routes/*.js`，在專案根目錄產生 `openapi.json`。這個檔案**有納入版本控制**，異動 API 後要重新產生並一併提交。專案**沒有**掛載 Swagger UI，該檔案需自行匯入 Postman / Swagger Editor 等工具檢視。

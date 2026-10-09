@@ -21,6 +21,7 @@
 - 2026-10-09：**綠界 ECPay AIO 金流**（信用卡）。`POST /api/orders/:id/ecpay` 產生付款表單參數、`POST /api/orders/:id/ecpay/verify` 由伺服器主動呼叫綠界 `QueryTradeInfo` 驗證並更新訂單（本地端收不到 Server Notify）；`POST /api/ecpay/result` 處理瀏覽器導回、`POST /api/ecpay/notify` 回應 `1|OK`。新增 `src/ecpay.js`（CheckMacValue SHA256、付款參數、查詢）。
 - `orders` 新增 `merchant_trade_no`、`ecpay_trade_no`、`payment_type`、`paid_at` 欄位，啟動時自動補到既有資料庫。
 - 測試：`tests/ecpay.test.js`、`tests/orderPayment.test.js`（共 8 個檔案、56 個案例）。
+- `openapi.json` 與 `.claude/skills/ecpay`（ECPay 整合用的 skill，以 gitlink 形式）納入版本控制。
 
 ### 變更
 
@@ -34,8 +35,7 @@
 
 ### 文件
 
-- 2026-10-09：更新各文件的金流說明；計畫歸檔於 `docs/plans/archive/2026-10-09-ecpay-aio-payment.md`。
-
+- 2026-10-09：更新各文件的金流說明；補充後台訂單頁在金流串接後的行為、`openapi.json` 需隨 API 異動提交、測試對 ECPay skill 目錄的依賴與尚未涵蓋的金流情境。計畫歸檔於 `docs/plans/archive/2026-10-09-ecpay-aio-payment.md`。
 - 2026-10-09：建立專案文件結構——`CLAUDE.md`、`docs/README.md`、`ARCHITECTURE.md`、`DEVELOPMENT.md`、`FEATURES.md`、`TESTING.md`、`CHANGELOG.md`，以及 `docs/plans/` 與 `docs/plans/archive/` 目錄。
 
 ---

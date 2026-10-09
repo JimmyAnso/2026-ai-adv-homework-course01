@@ -120,6 +120,7 @@ npm run dev:server   # 終端機 2：node server.js（沒有 nodemon，改後端
 - `responses` 中的成功回應要描述完整的 `{ data, error, message }` 結構；錯誤回應只需狀態碼與 `description`。
 - YAML 對縮排敏感：每行以 ` * ` 開頭後，內容以 2 空白逐層縮排。縮排錯誤會讓該端點從產出檔中消失而不報錯，改完請執行 `npm run openapi` 確認。
 - `pageRoutes.js` 的頁面路由不寫 `@openapi`。
+- `ecpayRoutes.js` 的兩支綠界端點歸在 `Orders` tag；它們不回傳 `{ data, error, message }`（一支是 303 導向、一支是純文字 `1|OK`），`responses` 請照實描述，不要套用統一格式的 schema。
 
 範例（需認證、有路徑參數與 body 的端點）：
 
@@ -330,7 +331,7 @@ Schema 與 seed 全部在 `src/database.js` 的 `initializeDatabase()`。**沒�
 ## 9. 提交前檢查清單
 
 - [ ] `npm test` 全數通過
-- [ ] 新增 / 異動的 API 有 `@openapi` 區塊，`npm run openapi` 可成功產生
+- [ ] 新增 / 異動的 API 有 `@openapi` 區塊，`npm run openapi` 可成功產生，並把更新後的 `openapi.json` 一起提交
 - [ ] 回應符合 `{ data, error, message }`
 - [ ] SQL 皆使用參數綁定；多步驟寫入使用 transaction
 - [ ] 沒有提交 `.env`、`database.sqlite*`、`public/css/output.css`
