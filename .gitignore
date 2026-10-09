@@ -38,3 +38,5 @@ coverage/
 
 .claude/*.local.json
 public/css/output.css
+
+package-lock.json
